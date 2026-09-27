@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fraud model dashboard · NovaPay</title>
+  <style>
+    :root { --bg:#f4f6fa; --card:#fff; --text:#16202e; --muted:#5b6678; --border:#dde3ec; --primary:#1f4fd8;
+            --ok:#0b6b3a; --ok-bg:#e3f4ea; --bad:#b42318; --bad-bg:#fdecea; --warn:#8a5a00; --warn-bg:#fff4dc;
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; color: var(--text); }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: var(--bg); }
+    main { max-width: 1000px; margin: 0 auto; padding: 1.5rem 1rem; display: grid; gap: 1rem; }
+    h1 { margin: 0; font-size: 1.5rem; } h2 { margin: 0 0 .75rem; font-size: 1.1rem; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; }
+    .muted { color: var(--muted); }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; }
+    .stat { border: 1px solid var(--border); border-radius: 10px; padding: .75rem; }
+    .stat b { display: block; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: .55rem .5rem; border-bottom: 1px solid var(--border); text-align: right; font-variant-numeric: tabular-nums; }
+    th:first-child, td:first-child { text-align: left; }
+    th { font-size: .85rem; color: var(--muted); }
+    .pill { font-size: .75rem; font-weight: 700; padding: .15rem .55rem; border-radius: 999px; }
+    .pass { background: var(--ok-bg); color: var(--ok); } .fail { background: var(--bad-bg); color: var(--bad); }
+    .champion { background: #e8eeff; color: var(--primary); }
+    form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .75rem 1rem; }
+    label { display: grid; gap: .3rem; font-weight: 600; font-size: .9rem; }
+    label.check { display: flex; align-items: center; gap: .5rem; }
+    input, select { font: inherit; padding: .5rem .6rem; border: 1px solid var(--border); border-radius: 8px; }
+    button { font: inherit; font-weight: 600; background: var(--primary); color: #fff; border: 0; border-radius: 8px; padding: .65rem 1.1rem; cursor: pointer; align-self: end; }
+    button:focus-visible, input:focus, select:focus { outline: 3px solid #9db7ff; outline-offset: 1px; }
+    .result { margin-top: 1rem; padding: 1rem; border-radius: 10px; font-weight: 600; }
+    .result.approve { background: var(--ok-bg); color: var(--ok); }
+    .result.review { background: var(--warn-bg); color: var(--warn); }
+    .result.block, .result.error { background: var(--bad-bg); color: var(--bad); }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Fraud model dashboard</h1>
+      <p class="muted" id="subtitle" data-testid="subtitle">Loading model…</p>
+    </header>
+
+    <section class="card" aria-labelledby="champ-h">
+      <h2 id="champ-h">Champion model</h2>
+      <div class="stats" id="champion-stats" data-testid="champion-stats"></div>
+    </section>
+
+    <section class="card" aria-labelledby="models-h">
+      <h2 id="models-h">Candidate models on the test set</h2>
+      <div class="table-wrap">
+        <table data-testid="models-table">
+          <thead><tr><th scope="col">Model</th><th scope="col">PR-AUC</th><th scope="col">Precision</th><th scope="col">Recall</th><th scope="col">False positive rate</th><th scope="col">Quality bar</th></tr></thead>
+          <tbody id="models"></tbody>
+        </table>
+      </div>
+      <p class="muted" id="bar" data-testid="quality-bar"></p>
+    </section>
+
+    <section class="card" aria-labelledby="score-h">
+      <h2 id="score-h">Score a payment</h2>
+      <form id="score-form" novalidate>
+        <label>Amount (EUR)<input name="amount" type="number" step="0.01" value="45.90" required></label>
+        <label>Hour of day<input name="hour" type="number" min="0" max="23" value="14" required></label>
+        <label>Merchant category<select name="merchant_category" id="category"></select></label>
+        <label>Country<select name="country" id="country"></select></label>
+        <label>Payments in last 24h<input name="txn_last_24h" type="number" min="0" value="2" required></label>
+        <label>Account age (days)<input name="account_age_days" type="number" min="0" value="900" required></label>
+        <label>Amount vs. usual spend<input name="amount_to_avg_ratio" type="number" step="0.01" min="0" value="1" required></label>
+        <label class="check"><input name="is_new_payee" type="checkbox"> New payee</label>
+        <label class="check"><input name="device_trusted" type="checkbox" checked> Trusted device</label>
+        <button type="submit">Score payment</button>
+      </form>
+      <div id="result" class="result" role="status" data-testid="score-result" hidden></div>
+    </section>
+  </main>
+
+  <script>
+    const CATEGORIES = ['groceries','restaurants','utilities','travel','electronics','gift_cards','crypto','p2p_transfer'];
+    const COUNTRIES = ['DE','FR','NL','AT','IT','ES','PL','BE','GB','US','TR','NG','RU','KP','IR'];
+    const pct = (x) => (x * 100).toFixed(1) + '%';
+    const fill = (id, values) => document.getElementById(id).innerHTML = values.map(v => `<option>${v}</option>`).join('');
+    fill('category', CATEGORIES); fill('country', COUNTRIES);
+
+    async function loadModel() {
+      const info = await (await fetch('/model')).json();
+      const champ = info.models[info.champion].metrics;
+      document.getElementById('subtitle').textContent =
+        `Champion: ${info.champion} · version ${info.model_version} · trained ${info.trained_at}`;
+      document.getElementById('champion-stats').innerHTML = [
+        ['PR-AUC', champ.pr_auc.toFixed(3)], ['Precision', pct(champ.precision)], ['Recall', pct(champ.recall)],
+        ['False positive rate', pct(champ.false_positive_rate)], ['Review threshold', info.thresholds.review.toFixed(3)],
+        ['Block threshold', info.thresholds.block.toFixed(3)],
+      ].map(([k, v]) => `<div class="stat" data-testid="stat"><span class="muted">${k}</span><b>${v}</b></div>`).join('');
+      document.getElementById('models').innerHTML = Object.entries(info.models).map(([name, m]) => `
+        <tr data-testid="model-row" data-model="${name}">
+          <td>${name} ${name === info.champion ? '<span class="pill champion" data-testid="champion-badge">champion</span>' : ''}</td>
+          <td>${m.metrics.pr_auc.toFixed(3)}</td><td>${pct(m.metrics.precision)}</td><td>${pct(m.metrics.recall)}</td>
+          <td>${pct(m.metrics.false_positive_rate)}</td>
+          <td><span class="pill ${m.passes_quality_bar ? 'pass' : 'fail'}" data-testid="bar-status">${m.passes_quality_bar ? 'PASS' : 'FAIL'}</span></td>
+        </tr>`).join('');
+      const b = info.quality_bar;
+      document.getElementById('bar').textContent =
+        `Quality bar: PR-AUC ≥ ${b.min_pr_auc}, precision ≥ ${pct(b.min_precision)}, recall ≥ ${pct(b.min_recall)}, false positive rate ≤ ${pct(b.max_fpr)}.`;
+    }
+
+    const form = document.getElementById('score-form');
+    const result = document.getElementById('result');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = form.elements;
+      const body = {
+        amount: Number(f.amount.value), hour: Number(f.hour.value), merchant_category: f.merchant_category.value,
+        country: f.country.value, is_new_payee: f.is_new_payee.checked, device_trusted: f.device_trusted.checked,
+        txn_last_24h: Number(f.txn_last_24h.value), account_age_days: Number(f.account_age_days.value),
+        amount_to_avg_ratio: Number(f.amount_to_avg_ratio.value),
+      };
+      const res = await fetch('/predict', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await res.json();
+      result.hidden = false;
+      if (!res.ok) {
+        result.className = 'result error';
+        result.textContent = 'Invalid input: ' + data.detail.map(d => `${d.loc.at(-1)} ${d.msg.toLowerCase()}`).join('; ');
+        return;
+      }
+      result.className = `result ${data.decision}`;
+      result.dataset.decision = data.decision;
+      const label = { approve: 'Approve', review: 'Review: ask for a one-time code', block: 'Block' }[data.decision];
+      result.textContent = `${label} · fraud probability ${pct(data.fraud_probability)}`;
+    });
+
+    loadModel();
+  </script>
+</body>
+</html>
