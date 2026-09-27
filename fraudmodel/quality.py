@@ -108,7 +108,16 @@ def run_checks(df: pd.DataFrame, fraud_rate_range: tuple[float, float] = (0.005,
     leaks = []
     if len(labels) == 2:
         for col in [c for c in FEATURES if c not in ("merchant_category", "country")]:
-            auc = roc_auc_score(df[TARGET], df[col].astype(float))
+            # Rows with missing values are reported by their own check; skipping them here
+            # keeps this check from crashing on exactly the data it should report on.
+            valid = df[[col, TARGET]].dropna()
+            if valid[TARGET].nunique() < 2:
+                continue
+            try:
+                values = valid[col].astype(float)
+            except (TypeError, ValueError):
+                continue  # wrong type, reported by the column types check
+            auc = roc_auc_score(valid[TARGET], values)
             if max(auc, 1 - auc) > 0.97:
                 leaks.append(f"{col} (AUC {max(auc, 1 - auc):.3f})")
     check("no target leakage", not leaks, f"suspicious: {leaks}" if leaks else "")
